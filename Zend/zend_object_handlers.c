@@ -2558,13 +2558,10 @@ ZEND_API zend_result zend_std_cast_object_tostring(zend_object *readobj, zval *w
 			zend_class_entry *ce = readobj->ce;
 			if (ce->__tostring) {
 				zval retval;
-				bool frameless_reentry = zend_frameless_protect_args_for_reentry();
+				zend_frameless_protect_args_for_reentry();
 				GC_ADDREF(readobj);
 				zend_call_known_instance_method_with_0_params(ce->__tostring, readobj, &retval);
 				zend_object_release(readobj);
-				if (frameless_reentry) {
-					zend_frameless_schedule_reentry_cleanup();
-				}
 				if (EXPECTED(Z_TYPE(retval) == IS_STRING)) {
 					ZVAL_COPY_VALUE(writeobj, &retval);
 					return SUCCESS;
