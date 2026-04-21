@@ -1582,6 +1582,153 @@ static zend_never_inline void zend_assign_to_object_dim(zend_object *obj, zval *
 	}
 }
 
+struct _zend_frameless_reentry_copies {
+	struct _zend_frameless_reentry_copies *prev;
+	zend_execute_data *execute_data;
+	const zend_op *opline;
+	uint8_t copied_args;
+	zval args[3];
+};
+
+static zend_always_inline bool zend_frameless_arg_needs_reentry_copy(zval *zv)
+{
+	ZVAL_DEREF(zv);
+	return Z_TYPE_P(zv) == IS_ARRAY || Z_TYPE_P(zv) == IS_STRING;
+}
+
+static void zend_frameless_reentry_copy_arg(zend_frameless_reentry_copies *copies, uint32_t arg, zval *zv)
+{
+	if (!zend_frameless_arg_needs_reentry_copy(zv)) {
+		return;
+	}
+
+	ZVAL_COPY_DEREF(&copies->args[arg], zv);
+	copies->copied_args |= (1u << arg);
+}
+
+static bool zend_frameless_reentry_has_copies(zend_execute_data *execute_data, const zend_op *opline)
+{
+	for (zend_frameless_reentry_copies *copies = EG(frameless_reentry_copies);
+			copies;
+			copies = copies->prev) {
+		if (copies->execute_data == execute_data && copies->opline == opline) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+ZEND_API bool zend_frameless_protect_args_for_reentry(void)
+{
+	zend_execute_data *execute_data = EG(current_execute_data);
+	if (!execute_data) {
+		return false;
+	}
+
+	if (!EX(func) || !ZEND_USER_CODE(EX(func)->type)) {
+		return false;
+	}
+
+	const zend_op *opline = EX(opline);
+	if (!opline || !ZEND_OP_IS_FRAMELESS_ICALL(opline->opcode)) {
+		return false;
+	}
+
+	if (zend_frameless_reentry_has_copies(execute_data, opline)) {
+		return true;
+	}
+
+	uint8_t num_args = ZEND_FLF_NUM_ARGS(opline->opcode);
+	if (num_args == 0) {
+		return false;
+	}
+
+	zend_frameless_reentry_copies *copies = emalloc(sizeof(zend_frameless_reentry_copies));
+	copies->execute_data = execute_data;
+	copies->opline = opline;
+	copies->copied_args = 0;
+
+	if (opline->op1_type == IS_CV) {
+		zend_frameless_reentry_copy_arg(copies, 0,
+			zend_get_zval_ptr(opline, opline->op1_type, &opline->op1, execute_data));
+	}
+	if (num_args >= 2 && opline->op2_type == IS_CV) {
+		zend_frameless_reentry_copy_arg(copies, 1,
+			zend_get_zval_ptr(opline, opline->op2_type, &opline->op2, execute_data));
+	}
+	if (num_args >= 3 && (opline + 1)->op1_type == IS_CV) {
+		zend_frameless_reentry_copy_arg(copies, 2,
+			zend_get_zval_ptr(opline + 1, (opline + 1)->op1_type, &(opline + 1)->op1, execute_data));
+	}
+
+	if (copies->copied_args == 0) {
+		efree(copies);
+		return false;
+	}
+
+	copies->prev = EG(frameless_reentry_copies);
+	EG(frameless_reentry_copies) = copies;
+
+	return true;
+}
+
+ZEND_API void zend_frameless_schedule_reentry_cleanup(void)
+{
+	zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
+}
+
+static bool zend_frameless_reentry_copies_in_use(zend_frameless_reentry_copies *copies)
+{
+	for (zend_execute_data *execute_data = EG(current_execute_data);
+			execute_data;
+			execute_data = execute_data->prev_execute_data) {
+		if (execute_data == copies->execute_data && execute_data->opline == copies->opline) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void zend_frameless_cleanup_reentry_copies_ex(bool force)
+{
+	zend_frameless_reentry_copies **next = &EG(frameless_reentry_copies);
+
+	while (*next) {
+		zend_frameless_reentry_copies *copies = *next;
+
+		if (!force && zend_frameless_reentry_copies_in_use(copies)) {
+			next = &copies->prev;
+			continue;
+		}
+
+		*next = copies->prev;
+
+		for (uint32_t i = 0; i < 3; i++) {
+			if (copies->copied_args & (1u << i)) {
+				zval_ptr_dtor(&copies->args[i]);
+			}
+		}
+
+		efree(copies);
+	}
+
+	if (EG(frameless_reentry_copies)) {
+		zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
+	}
+}
+
+ZEND_API void zend_frameless_cleanup_reentry_copies(void)
+{
+	zend_frameless_cleanup_reentry_copies_ex(false);
+}
+
+ZEND_API void zend_frameless_cleanup_reentry_copies_force(void)
+{
+	zend_frameless_cleanup_reentry_copies_ex(true);
+}
+
 static void frameless_observed_call_copy(zend_execute_data *call, uint32_t arg, zval *zv)
 {
 	if (Z_ISUNDEF_P(zv)) {
@@ -4081,6 +4228,7 @@ ZEND_API void ZEND_FASTCALL zend_free_compiled_variables(zend_execute_data *exec
 ZEND_API ZEND_COLD void ZEND_FASTCALL zend_fcall_interrupt(zend_execute_data *call)
 {
 	zend_atomic_bool_store_ex(&EG(vm_interrupt), false);
+	zend_frameless_cleanup_reentry_copies();
 	if (zend_atomic_bool_load_ex(&EG(timed_out))) {
 		zend_timeout();
 	} else if (zend_interrupt_function) {

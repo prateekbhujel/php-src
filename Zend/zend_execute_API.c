@@ -176,6 +176,7 @@ void init_executor(void) /* {{{ */
 	EG(full_tables_cleanup) = 0;
 	ZEND_ATOMIC_BOOL_INIT(&EG(vm_interrupt), false);
 	ZEND_ATOMIC_BOOL_INIT(&EG(timed_out), false);
+	EG(frameless_reentry_copies) = NULL;
 
 	EG(exception) = NULL;
 	EG(prev_exception) = NULL;
@@ -274,6 +275,8 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 {
 	zend_string *key;
 	zval *zv;
+
+	zend_frameless_cleanup_reentry_copies_force();
 
 	EG(flags) |= EG_FLAGS_IN_RESOURCE_SHUTDOWN;
 	zend_close_rsrc_list(&EG(regular_list));
@@ -1039,6 +1042,7 @@ cleanup_args:
 		/* This flag is regularly checked while running user functions, but not internal
 		 * So see whether interrupt flag was set while the function was running... */
 		if (zend_atomic_bool_exchange_ex(&EG(vm_interrupt), false)) {
+			zend_frameless_cleanup_reentry_copies();
 			if (zend_atomic_bool_load_ex(&EG(timed_out))) {
 				zend_timeout();
 			} else if (zend_interrupt_function) {
