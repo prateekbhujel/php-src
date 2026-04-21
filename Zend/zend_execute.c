@@ -1673,11 +1673,6 @@ ZEND_API bool zend_frameless_protect_args_for_reentry(void)
 	return true;
 }
 
-ZEND_API void zend_frameless_schedule_reentry_cleanup(void)
-{
-	zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
-}
-
 static bool zend_frameless_reentry_copies_in_use(zend_frameless_reentry_copies *copies)
 {
 	for (zend_execute_data *execute_data = EG(current_execute_data);
@@ -1689,6 +1684,34 @@ static bool zend_frameless_reentry_copies_in_use(zend_frameless_reentry_copies *
 	}
 
 	return false;
+}
+
+static void zend_frameless_free_reentry_copies(zend_frameless_reentry_copies *copies)
+{
+	for (uint32_t i = 0; i < 3; i++) {
+		if (copies->copied_args & (1u << i)) {
+			zval_ptr_dtor(&copies->args[i]);
+		}
+	}
+
+	efree(copies);
+}
+
+ZEND_API void zend_frameless_cleanup_reentry_copies_for_handler(zend_execute_data *execute_data, const zend_op *opline)
+{
+	zend_frameless_reentry_copies **next = &EG(frameless_reentry_copies);
+
+	while (*next) {
+		zend_frameless_reentry_copies *copies = *next;
+
+		if (copies->execute_data != execute_data || copies->opline != opline) {
+			next = &copies->prev;
+			continue;
+		}
+
+		*next = copies->prev;
+		zend_frameless_free_reentry_copies(copies);
+	}
 }
 
 static void zend_frameless_cleanup_reentry_copies_ex(bool force)
@@ -1704,18 +1727,7 @@ static void zend_frameless_cleanup_reentry_copies_ex(bool force)
 		}
 
 		*next = copies->prev;
-
-		for (uint32_t i = 0; i < 3; i++) {
-			if (copies->copied_args & (1u << i)) {
-				zval_ptr_dtor(&copies->args[i]);
-			}
-		}
-
-		efree(copies);
-	}
-
-	if (EG(frameless_reentry_copies)) {
-		zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
+		zend_frameless_free_reentry_copies(copies);
 	}
 }
 
