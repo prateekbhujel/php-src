@@ -3873,6 +3873,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_JMP_FORWARD_SPEC_H
 static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_interrupt_helper_SPEC(ZEND_OPCODE_HANDLER_ARGS)
 {
 	zend_atomic_bool_store_ex(&EG(vm_interrupt), false);
+	zend_frameless_cleanup_reentry_copies();
 	SAVE_OPLINE();
 	if (zend_atomic_bool_load_ex(&EG(timed_out))) {
 		zend_timeout();

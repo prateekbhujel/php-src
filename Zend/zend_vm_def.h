@@ -10410,6 +10410,7 @@ ZEND_VM_DEFINE_OP(137, ZEND_OP_DATA);
 ZEND_VM_HELPER(zend_interrupt_helper, ANY, ANY)
 {
 	zend_atomic_bool_store_ex(&EG(vm_interrupt), false);
+	zend_frameless_cleanup_reentry_copies();
 	SAVE_OPLINE();
 	if (zend_atomic_bool_load_ex(&EG(timed_out))) {
 		zend_timeout();
