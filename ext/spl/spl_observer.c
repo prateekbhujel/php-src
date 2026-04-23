@@ -662,7 +662,9 @@ PHP_METHOD(SplObjectStorage, removeAllExcept)
 		spl_object_storage_detach(intern, to_remove[i]);
 		OBJ_RELEASE(to_remove[i]);
 	}
-	efree(to_remove);
+	if (to_remove) {
+		efree(to_remove);
+	}
 
 	zend_hash_internal_pointer_reset_ex(&intern->storage, &intern->pos);
 	intern->index = 0;
