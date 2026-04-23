@@ -633,6 +633,9 @@ PHP_METHOD(SplObjectStorage, removeAllExcept)
 	spl_SplObjectStorage *intern = Z_SPLOBJSTORAGE_P(ZEND_THIS);
 	spl_SplObjectStorage *other;
 	spl_SplObjectStorageElement *element;
+	zend_object **to_remove = NULL;
+	uint32_t to_remove_count = 0;
+	uint32_t to_remove_capacity = 0;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &obj, spl_ce_SplObjectStorage) == FAILURE) {
 		RETURN_THROWS();
@@ -640,14 +643,26 @@ PHP_METHOD(SplObjectStorage, removeAllExcept)
 
 	other = Z_SPLOBJSTORAGE_P(obj);
 
+	/* Avoid mutating this storage while other->getHash() may re-enter it. */
 	SPL_SAFE_HASH_FOREACH_PTR(&intern->storage, element) {
 		zend_object *elem_obj = element->obj;
 		GC_ADDREF(elem_obj);
 		if (!spl_object_storage_contains(other, elem_obj)) {
-			spl_object_storage_detach(intern, elem_obj);
+			if (to_remove_count == to_remove_capacity) {
+				to_remove_capacity = to_remove_capacity ? to_remove_capacity * 2 : 8;
+				to_remove = safe_erealloc(to_remove, to_remove_capacity, sizeof(zend_object *), 0);
+			}
+			to_remove[to_remove_count++] = elem_obj;
+			continue;
 		}
 		OBJ_RELEASE(elem_obj);
 	} ZEND_HASH_FOREACH_END();
+
+	for (uint32_t i = 0; i < to_remove_count; i++) {
+		spl_object_storage_detach(intern, to_remove[i]);
+		OBJ_RELEASE(to_remove[i]);
+	}
+	efree(to_remove);
 
 	zend_hash_internal_pointer_reset_ex(&intern->storage, &intern->pos);
 	intern->index = 0;
