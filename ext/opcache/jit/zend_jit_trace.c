@@ -6470,17 +6470,27 @@ static zend_vm_opcode_handler_t zend_jit_trace(zend_jit_trace_rec *trace_buffer,
 						goto done;
 					case ZEND_FRAMELESS_ICALL_1:
 						op1_info = OP1_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, 0, 0)) {
+							break;
+						}
 						jit_frameless_icall1(jit, opline, op1_info);
 						goto done;
 					case ZEND_FRAMELESS_ICALL_2:
 						op1_info = OP1_INFO();
 						op2_info = OP2_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, op2_info, 0)) {
+							break;
+						}
 						jit_frameless_icall2(jit, opline, op1_info, op2_info);
 						goto done;
 					case ZEND_FRAMELESS_ICALL_3:
 						op1_info = OP1_INFO();
 						op2_info = OP2_INFO();
-						jit_frameless_icall3(jit, opline, op1_info, op2_info, OP1_DATA_INFO());
+						op1_data_info = OP1_DATA_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, op2_info, op1_data_info)) {
+							break;
+						}
+						jit_frameless_icall3(jit, opline, op1_info, op2_info, op1_data_info);
 						goto done;
 					default:
 						break;

@@ -1426,7 +1426,7 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 	bool recv_emitted = false;   /* emitted at least one RECV opcode */
 	uint8_t smart_branch_opcode;
 	uint32_t target_label, target_label2;
-	uint32_t op1_info, op1_def_info, op2_info, res_info, res_use_info, op1_mem_info;
+	uint32_t op1_info, op1_def_info, op2_info, res_info, res_use_info, op1_data_info, op1_mem_info;
 	zend_jit_addr op1_addr, op1_def_addr, op2_addr, op2_def_addr, res_addr;
 	zend_class_entry *ce = NULL;
 	bool ce_is_instanceof;
@@ -2693,17 +2693,27 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 						goto done;
 					case ZEND_FRAMELESS_ICALL_1:
 						op1_info = OP1_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, 0, 0)) {
+							break;
+						}
 						jit_frameless_icall1(jit, opline, op1_info);
 						goto done;
 					case ZEND_FRAMELESS_ICALL_2:
 						op1_info = OP1_INFO();
 						op2_info = OP2_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, op2_info, 0)) {
+							break;
+						}
 						jit_frameless_icall2(jit, opline, op1_info, op2_info);
 						goto done;
 					case ZEND_FRAMELESS_ICALL_3:
 						op1_info = OP1_INFO();
 						op2_info = OP2_INFO();
-						jit_frameless_icall3(jit, opline, op1_info, op2_info, OP1_DATA_INFO());
+						op1_data_info = OP1_DATA_INFO();
+						if (zend_jit_frameless_call_may_need_separated_args(opline, op1_info, op2_info, op1_data_info)) {
+							break;
+						}
+						jit_frameless_icall3(jit, opline, op1_info, op2_info, op1_data_info);
 						goto done;
 					default:
 						break;
