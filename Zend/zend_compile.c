@@ -106,6 +106,7 @@ static void zend_compile_stmt(zend_ast *ast);
 static void zend_compile_assign(znode *result, zend_ast *ast, bool stmt, uint32_t type);
 
 static zend_ast *zend_partial_apply(zend_ast *callable_ast, zend_ast *pipe_arg);
+static bool zend_is_pipe_optimizable_callable_name(zend_ast *ast);
 
 #ifdef ZEND_CHECK_STACK_LIMIT
 zend_never_inline static void zend_stack_limit_error(void)
@@ -5354,24 +5355,52 @@ static zend_result zend_compile_func_array_map(znode *result, zend_ast_list *arg
 		return FAILURE;
 	}
 
+	/* Bail out if the callback is assert() due to the AST stringification logic
+	 * breaking for the generated call. */
+	if (callback->kind == ZEND_AST_CALL
+	 && !zend_is_pipe_optimizable_callable_name(callback->child[0])) {
+		return FAILURE;
+	}
+
 	/* PFAs with non-literal pre-bound arguments are not optimizable because we
 	 * can't memoize arguments without breaking pass-by-reference.
-	 * TODO: Support PFAs when the function is known to not receive by ref. */
+	 * Check also that there is exactly one placeholder and no variadic placeholder
+	 * with named arguments so zend_partial_apply() is guaranteed to succeed. */
 	zend_ast_fcc *fcc = (zend_ast_fcc*)args_ast;
 	zend_ast_list *fcc_args = zend_ast_get_list(fcc->args);
+	zend_ast *first_placeholder = NULL;
+	bool uses_named_args = false;
 	for (uint32_t i = 0; i < fcc_args->children; i++) {
 		zend_ast *arg = fcc_args->child[i];
 		if (arg->kind == ZEND_AST_NAMED_ARG) {
+			uses_named_args = true;
 			arg = arg->child[1];
 		}
 
 		if (arg->kind == ZEND_AST_PLACEHOLDER_ARG) {
+			if (first_placeholder != NULL) {
+				return FAILURE;
+			}
+			first_placeholder = arg;
 			continue;
 		}
 
 		if (arg->kind != ZEND_AST_ZVAL) {
 			return FAILURE;
 		}
+	}
+	if (!first_placeholder || (first_placeholder->attr == ZEND_PLACEHOLDER_VARIADIC && uses_named_args)) {
+		return FAILURE;
+	}
+
+	/* Bail out if the input array is known at compile time to not be an array.
+	 * This must be checked before compiling any non-literal callee (e.g. getf()(...),
+	 * getc()::m(...)) or allocating loop temporaries to avoid double evaluation
+	 * and memory leaks when falling back to a regular call. */
+	zend_eval_const_expr(&args->child[1]);
+	if (args->child[1]->kind == ZEND_AST_ZVAL
+	 && Z_TYPE_P(zend_ast_get_zval(args->child[1])) != IS_ARRAY) {
+		return FAILURE;
 	}
 
 	/* Evaluate class name */
@@ -5425,9 +5454,7 @@ static zend_result zend_compile_func_array_map(znode *result, zend_ast_list *arg
 
 	zend_ast *call_args = zend_partial_apply(callback,
 			zend_ast_create_znode(&value));
-	if (!call_args) {
-		goto fail;
-	}
+	ZEND_ASSERT(call_args);
 
 	zend_op *opline;
 
@@ -5435,10 +5462,6 @@ static zend_result zend_compile_func_array_map(znode *result, zend_ast_list *arg
 	zend_compile_expr(&array, args->child[1]);
 	/* array is an argument to both ZEND_TYPE_ASSERT and to ZEND_FE_RESET_R. */
 	if (array.op_type == IS_CONST) {
-		if (Z_TYPE(array.u.constant) != IS_ARRAY) {
-			zval_ptr_dtor_nogc(&array.u.constant);
-			goto fail;
-		}
 		Z_TRY_ADDREF(array.u.constant);
 	}
 
@@ -5523,17 +5546,6 @@ static zend_result zend_compile_func_array_map(znode *result, zend_ast_list *arg
 	}
 
 	return SUCCESS;
-
-fail:
-	CG(active_op_array)->T--;
-	if (func_node.op_type == IS_CONST) {
-		zval_ptr_dtor_nogc(&func_node.u.constant);
-	}
-	if (class_node.op_type == IS_CONST) {
-		zval_ptr_dtor_nogc(&class_node.u.constant);
-	}
-
-	return FAILURE;
 }
 
 static zend_result zend_try_compile_special_func_ex(znode *result, zend_string *lcname, zend_ast_list *args, uint32_t type, uint32_t lineno) /* {{{ */
